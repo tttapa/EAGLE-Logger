@@ -21,7 +21,7 @@ class ILoggable {
         this->previous = last;
         if (this->previous != nullptr)
             this->previous->next = this;
-        last       = this;
+        last = this;
         this->next = nullptr;
     }
 
@@ -58,21 +58,21 @@ class ILoggable {
 };
 
 ILoggable *ILoggable::first = nullptr;
-ILoggable *ILoggable::last  = nullptr;
+ILoggable *ILoggable::last = nullptr;
 
 class Logger {
   public:
     bool log(const char *identifier, const uint8_t *data, uint8_t typeID,
              size_t length) {
-        size_t idLen    = strlen(identifier);
+        size_t idLen = strlen(identifier);
         size_t entryLen = roundUpToWordSizeMultiple(idLen + 1) + 4 +
                           roundUpToWordSizeMultiple(length);
         if (entryLen > maxLen)
             return false;
-        strcpy((char *) bufferwritelocation, identifier);
-        size_t headerStart               = nextWord(idLen);
+        strcpy((char *)bufferwritelocation, identifier);
+        size_t headerStart = nextWord(idLen);
         bufferwritelocation[headerStart] = typeID;
-        size_t dataStart                 = headerStart + 4;
+        size_t dataStart = headerStart + 4;
         memcpy(bufferwritelocation + dataStart, data, length);
         bufferwritelocation[headerStart + 1] = length >> 0;
         bufferwritelocation[headerStart + 2] = length >> 8;
@@ -81,7 +81,7 @@ class Logger {
         maxLen -= paddedLen;
         bufferwritelocation += paddedLen;
         if (maxLen > 0)
-            bufferwritelocation[0] = 0x00;  // Null terminate
+            bufferwritelocation[0] = 0x00; // Null terminate
         return true;
     }
     template <class T, size_t N>
@@ -102,8 +102,8 @@ class Logger {
     bool log(ILoggable &loggable) { return loggable.log(*this); }
 
   private:
-    constexpr static size_t buffersize = 280;
-    size_t maxLen                      = buffersize;
+    constexpr static size_t buffersize = 320;
+    size_t maxLen = buffersize;
     std::array<uint8_t, buffersize> buffer;
     uint8_t *bufferwritelocation = buffer.begin();
 
@@ -119,10 +119,10 @@ class Loggable : public ILoggable {
 
   public:
     bool log(Logger &logger) override {
-        return logger.log(getID(),                                         //
-                          reinterpret_cast<const uint8_t *>(data.data()),  //
-                          getTypeID<T>(),                                  //
-                          N * sizeof(T));                                  //
+        return logger.log(getID(),                                        //
+                          reinterpret_cast<const uint8_t *>(data.data()), //
+                          getTypeID<T>(),                                 //
+                          N * sizeof(T));                                 //
     }
 
   private:
@@ -135,7 +135,7 @@ char nibbleToHex(uint8_t val) {
 }
 
 void printHex(std::ostream &os, uint8_t val) {
-    os << nibbleToHex(val >> 4) << nibbleToHex(val) << ' ';
+    os << nibbleToHex(val >> 4) << nibbleToHex(val);
 }
 
 #include <iomanip>
@@ -143,21 +143,30 @@ void printHex(std::ostream &os, uint8_t val) {
 inline void printBuffer(const uint8_t *buffer, size_t length) {
     for (size_t i = 0; i < length; i += 4) {
         std::cout << std::setw(4) << i << "   ";
-        printHex(std::cout, buffer[i + 0]);
-        printHex(std::cout, buffer[i + 1]);
-        printHex(std::cout, buffer[i + 2]);
-        printHex(std::cout, buffer[i + 3]);
-        std::cout << "  "
-                  << (isprint(buffer[i + 0]) ? (char) buffer[i + 0] : '.')
-                  << ' ';
-        std::cout << (isprint(buffer[i + 1]) ? (char) buffer[i + 1] : '.')
-                  << ' ';
-        std::cout << (isprint(buffer[i + 2]) ? (char) buffer[i + 2] : '.')
-                  << ' ';
-        std::cout << (isprint(buffer[i + 3]) ? (char) buffer[i + 3] : '.')
-                  << ' ';
+        for (unsigned int j = 0; j < 4; ++j) {
+            printHex(std::cout, buffer[i + j]);
+            std::cout << ' ';
+        }
+        std::cout << "  ";
+        for (unsigned int j = 0; j < 4; ++j) {
+            std::cout << (isprint(buffer[i + j]) ? (char)buffer[i + j] : '.')
+                      << ' ';
+        }
         std::cout << std::endl;
     }
+}
+
+inline void printPython(const uint8_t *buffer, size_t length) {
+    std::cout << "bytes((\n";
+    for (size_t i = 0; i < length; i += 4) {
+        for (unsigned int j = 0; j < 4; ++j) {
+            std::cout << " 0x";
+            printHex(std::cout, buffer[i + j]);
+            std::cout << ",";
+        }
+        std::cout << "\n";
+    }
+    std::cout << "))" << std::endl;
 }
 
 class LogEntry {
@@ -188,19 +197,19 @@ class LogEntry {
     static LogEntry parse(const uint8_t *buffer, size_t length) {
         std::map<const char *, LogElement, strcmp> parseResult{};
         const uint8_t *data = buffer;
-        const uint8_t *end  = buffer + length;
+        const uint8_t *end = buffer + length;
         while (data < end) {
-            const char *identifier = (const char *) data;
-            size_t idLen           = strlen(identifier);
+            const char *identifier = (const char *)data;
+            size_t idLen = strlen(identifier);
             if (idLen == 0)
                 break;
             std::cout << data - buffer << '\t';
             size_t headerStart = nextWord(idLen);
-            uint8_t type       = data[headerStart];
-            uint32_t length    = (data[headerStart + 1] << 0) |  //
-                              (data[headerStart + 2] << 8) |     //
+            uint8_t type = data[headerStart];
+            uint32_t length = (data[headerStart + 1] << 0) | //
+                              (data[headerStart + 2] << 8) | //
                               (data[headerStart + 2] << 16);
-            size_t dataStart        = headerStart + 4;
+            size_t dataStart = headerStart + 4;
             parseResult[identifier] = {data + dataStart, type, length};
             std::cout << identifier << '\t' << +type << '\t' << length
                       << std::endl;
@@ -265,7 +274,7 @@ int main() {
         {{0xEFBEADDE}},
     };
 
-    uint32_t carray[]                = {0x11223344, 0x55667788};
+    uint32_t carray[] = {0x11223344, 0x55667788};
     std::array<uint32_t, 2> stdarray = {0x11223344, 0x55667788};
 
     Logger logger;
@@ -275,15 +284,20 @@ int main() {
     logger.log("string", "test-string");
     logger.log("c-array", carray);
     logger.log("std::array", stdarray);
+    logger.log("unicode", "🎹");
+    logger.log("🔑 Key", "unicode key");
+    logger.log("日", "明");
 
     auto buffer = logger.getBuffer();
 
     printBuffer(buffer.data(), buffer.size());
+    printPython(buffer.data(), buffer.size());
 
     const LogEntry logEntry = LogEntry::parse(buffer.data(), buffer.size());
 
     std::cout << logEntry["doubles"].get<double>(1) << std::endl;
     std::cout << logEntry["string"].getString() << std::endl;
+    std::cout << logEntry["unicode"].getString() << std::endl;
     std::cout << logEntry["std::array"].get<uint32_t>(0) << std::endl;
 
     for (auto &el : logEntry) {
