@@ -169,6 +169,66 @@ inline void printPython(const uint8_t *buffer, size_t length) {
     std::cout << "))" << std::endl;
 }
 
+#include <algorithm>
+
+class LogEntryIterator {
+  public:
+    LogEntryIterator() = default;
+    LogEntryIterator(const uint8_t *buffer, size_t length)
+        : buffer(buffer), remainingBufferLength(length) {
+        if (remainingBufferLength == 0 || !parse())
+            *this = {};
+    }
+
+    LogEntryIterator &operator++() {
+        size_t totalLength =
+            headerStart + 4 + roundUpToWordSizeMultiple(dataLength);
+        buffer += totalLength;
+        remainingBufferLength -= totalLength;
+        if (remainingBufferLength == 0 || !parse())
+            *this = {};
+        return *this;
+    }
+
+    bool parse() {
+        const char *identifier = (const char *)buffer;
+        size_t idLen = strlen(identifier);
+        if (idLen == 0) // No valid key
+            return false;
+        headerStart = nextWord(idLen);
+        type = buffer[headerStart];
+        dataLength = (buffer[headerStart + 1] << 0) | //
+                     (buffer[headerStart + 2] << 8) | //
+                     (buffer[headerStart + 2] << 16);
+        return true;
+    }
+
+    uint8_t getTypeID() const { return type; }
+    uint32_t getDataLength() const { return dataLength; }
+    const uint8_t *getBuffer() const { return buffer; }
+    const char *getID() const { return (const char *)buffer; }
+    const uint8_t *getData() const { return buffer + headerStart + 4; }
+
+    bool operator!=(const LogEntryIterator &other) {
+        return this->remainingBufferLength != other.remainingBufferLength;
+    }
+
+    LogEntryIterator &operator*() { return *this; }
+    const LogEntryIterator &operator*() const { return *this; }
+    LogEntryIterator *operator->() { return this; }
+    const LogEntryIterator *operator->() const { return this; }
+
+    LogEntryIterator begin() { return *this; }
+    LogEntryIterator end() const { return {}; }
+
+  private:
+    const uint8_t *buffer = nullptr;
+    size_t remainingBufferLength = 0;
+    size_t headerStart;
+    uint32_t dataLength : 24;
+    uint8_t type : 8;
+};
+
 class LogEntry {
   public:
     struct LogElement {
@@ -196,24 +256,16 @@ class LogEntry {
 
     static LogEntry parse(const uint8_t *buffer, size_t length) {
         std::map<const char *, LogElement, strcmp> parseResult{};
-        const uint8_t *data = buffer;
-        const uint8_t *end = buffer + length;
-        while (data < end) {
-            const char *identifier = (const char *)data;
-            size_t idLen = strlen(identifier);
-            if (idLen == 0)
-                break;
-            std::cout << data - buffer << '\t';
-            size_t headerStart = nextWord(idLen);
-            uint8_t type = data[headerStart];
-            uint32_t length = (data[headerStart + 1] << 0) | //
-                              (data[headerStart + 2] << 8) | //
-                              (data[headerStart + 2] << 16);
-            size_t dataStart = headerStart + 4;
-            parseResult[identifier] = {data + dataStart, type, length};
-            std::cout << identifier << '\t' << +type << '\t' << length
-                      << std::endl;
-            data += dataStart + roundUpToWordSizeMultiple(length);
+        for (auto &entry : LogEntryIterator(buffer, length)) {
+            const char *identifier = entry.getID();
+            std::cout << entry.getBuffer() - buffer << '\t';
+            parseResult[identifier] = {
+                entry.getData(),
+                entry.getTypeID(),
+                entry.getDataLength(),
+            };
+            std::cout << identifier << '\t' << +entry.getTypeID() << '\t'
+                      << entry.getDataLength() << std::endl;
         }
         return {std::move(parseResult)};
     }
@@ -302,5 +354,9 @@ int main() {
 
     for (auto &el : logEntry) {
         std::cout << el.first << std::endl;
+    }
+
+    for (auto &logentry : LogEntryIterator(buffer.data(), buffer.size())) {
+        std::cout << "+ " << logentry.getID() << std::endl;
     }
 }
