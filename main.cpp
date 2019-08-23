@@ -3,59 +3,113 @@
 #include <iostream>
 #include <map>
 
+#include "LoggerTypes.hpp"
+
 inline size_t nextWord(size_t i) { return i - (i % 4) + 4; }
 inline size_t roundUpToWordSizeMultiple(size_t i) {
     return i + 3 - ((i + 3) % 4);
 }
 
+class Logger;
+
 class ILoggable {
   protected:
-    ILoggable(const char *id) : id(id) {}
+    ILoggable(const char *id) : id(id) {
+        // Append to the linked list of instances
+        if (first == nullptr)
+            first = this;
+        this->previous = last;
+        if (this->previous != nullptr)
+            this->previous->next = this;
+        last       = this;
+        this->next = nullptr;
+    }
 
   public:
-    ~ILoggable() = default;
-    size_t log(uint8_t *buffer, size_t maxLen) {
-        size_t idLen = strlen(id);
-        if (idLen + 1 + 4 > maxLen)
-            return 0;
-        strcpy((char *) buffer, id);
-        size_t headerStart  = nextWord(idLen);
-        buffer[headerStart] = getTypeID();
-        size_t dataStart    = headerStart + 4;
-        size_t dataLen      = logData(buffer + dataStart, maxLen - dataStart);
-        buffer[headerStart + 1] = dataLen >> 0;
-        buffer[headerStart + 2] = dataLen >> 8;
-        buffer[headerStart + 3] = dataLen >> 16;
-        return roundUpToWordSizeMultiple(dataStart + dataLen);
+    virtual ~ILoggable() {
+        // Remove from the linked list of instances
+        if (this->previous != nullptr)
+            this->previous->next = this->next;
+        if (this == last)
+            last = this->previous;
+        if (this->next != nullptr)
+            this->next->previous = this->previous;
+        if (this == first)
+            first = this->next;
     }
-    virtual size_t logData(uint8_t *buffer, size_t maxLen) = 0;
-    virtual uint8_t getTypeID()                            = 0;
+
+    virtual bool log(Logger &logger) = 0;
+    const char *getID() const { return id; }
+
+    static bool logAll(Logger &logger) {
+        bool success = true;
+        for (ILoggable *el = first; el != nullptr; el = el->next)
+            success &= el->log(logger);
+        return success;
+    }
 
   private:
     const char *id;
+
+    static ILoggable *first;
+    static ILoggable *last;
+    ILoggable *next;
+    ILoggable *previous;
 };
 
-template <class T>
-uint8_t getTypeID();
+ILoggable *ILoggable::first = nullptr;
+ILoggable *ILoggable::last  = nullptr;
 
-#define ADD_TYPE(type, value)                                                  \
-    namespace LoggerType {                                                     \
-    constexpr uint8_t type_##type = (value);                                   \
-    }                                                                          \
-    template <>                                                                \
-    uint8_t getTypeID<type>() {                                                \
-        return LoggerType::type_##type;                                        \
+class Logger {
+  public:
+    bool log(const char *identifier, const uint8_t *data, uint8_t typeID,
+             size_t length) {
+        size_t idLen    = strlen(identifier);
+        size_t entryLen = roundUpToWordSizeMultiple(idLen + 1) + 4 +
+                          roundUpToWordSizeMultiple(length);
+        if (entryLen > maxLen)
+            return false;
+        strcpy((char *) bufferwritelocation, identifier);
+        size_t headerStart               = nextWord(idLen);
+        bufferwritelocation[headerStart] = typeID;
+        size_t dataStart                 = headerStart + 4;
+        memcpy(bufferwritelocation + dataStart, data, length);
+        bufferwritelocation[headerStart + 1] = length >> 0;
+        bufferwritelocation[headerStart + 2] = length >> 8;
+        bufferwritelocation[headerStart + 3] = length >> 16;
+        size_t paddedLen = roundUpToWordSizeMultiple(dataStart + length);
+        maxLen -= paddedLen;
+        bufferwritelocation += paddedLen;
+        if (maxLen > 0)
+            bufferwritelocation[0] = 0x00;  // Null terminate
+        return true;
+    }
+    template <class T, size_t N>
+    bool log(const char *identifier, const std::array<T, N> &data) {
+        return log(identifier, reinterpret_cast<const uint8_t *>(data.data()),
+                   getTypeID<T>(), N * sizeof(T));
+    }
+    template <class T, size_t N>
+    bool log(const char *identifier, const T (&data)[N]) {
+        return log(identifier, reinterpret_cast<const uint8_t *>(data),
+                   getTypeID<T>(), N * sizeof(T));
+    }
+    bool log(const char *identifier, const char *data) {
+        return log(identifier, reinterpret_cast<const uint8_t *>(data),
+                   getTypeID<char>(), strlen(data));
     }
 
-ADD_TYPE(uint32_t, 1)
-ADD_TYPE(int32_t, 2)
-ADD_TYPE(uint64_t, 3)
-ADD_TYPE(int64_t, 4)
-ADD_TYPE(float, 5)
-ADD_TYPE(double, 6)
-ADD_TYPE(bool, 7)
-ADD_TYPE(uint8_t, 8)
-ADD_TYPE(char, 9)
+    bool log(ILoggable &loggable) { return loggable.log(*this); }
+
+  private:
+    constexpr static size_t buffersize = 280;
+    size_t maxLen                      = buffersize;
+    std::array<uint8_t, buffersize> buffer;
+    uint8_t *bufferwritelocation = buffer.begin();
+
+  public:
+    const std::array<uint8_t, buffersize> &getBuffer() const { return buffer; }
+};
 
 template <class T, size_t N>
 class Loggable : public ILoggable {
@@ -64,16 +118,15 @@ class Loggable : public ILoggable {
         : ILoggable(id), data(data) {}
 
   public:
-    size_t logData(uint8_t *buffer, size_t maxLen) override {
-        if (maxLen < N * sizeof(T))
-            return 0;
-        memcpy(buffer, data.data(), data.size() * sizeof(T));
-        return N * sizeof(T);
+    bool log(Logger &logger) override {
+        return logger.log(getID(),                                         //
+                          reinterpret_cast<const uint8_t *>(data.data()),  //
+                          getTypeID<T>(),                                  //
+                          N * sizeof(T));                                  //
     }
-    uint8_t getTypeID() override { return ::getTypeID<T>(); }
 
   private:
-    std::array<T, N> data;
+    std::array<T, N> data = {};
 };
 
 char nibbleToHex(uint8_t val) {
@@ -85,21 +138,93 @@ void printHex(std::ostream &os, uint8_t val) {
     os << nibbleToHex(val >> 4) << nibbleToHex(val) << ' ';
 }
 
-struct LogEntry {
-    const uint8_t *data;
-    uint8_t type : 8;
-    uint32_t length : 24;
+#include <iomanip>
 
-    template <class T>
-    T get(size_t index = 0) const {
-        if (this->type != getTypeID<T>())
-            throw std::runtime_error("Invalid type");
-        if (index * sizeof(T) >= this->length)
-            throw std::out_of_range("Index out of range");
-        T result;
-        memcpy(&result, data + sizeof(T) * index, sizeof(T));
-        return result;
+inline void printBuffer(const uint8_t *buffer, size_t length) {
+    for (size_t i = 0; i < length; i += 4) {
+        std::cout << std::setw(4) << i << "   ";
+        printHex(std::cout, buffer[i + 0]);
+        printHex(std::cout, buffer[i + 1]);
+        printHex(std::cout, buffer[i + 2]);
+        printHex(std::cout, buffer[i + 3]);
+        std::cout << "  "
+                  << (isprint(buffer[i + 0]) ? (char) buffer[i + 0] : '.')
+                  << ' ';
+        std::cout << (isprint(buffer[i + 1]) ? (char) buffer[i + 1] : '.')
+                  << ' ';
+        std::cout << (isprint(buffer[i + 2]) ? (char) buffer[i + 2] : '.')
+                  << ' ';
+        std::cout << (isprint(buffer[i + 3]) ? (char) buffer[i + 3] : '.')
+                  << ' ';
+        std::cout << std::endl;
     }
+}
+
+class LogEntry {
+  public:
+    struct LogElement {
+        const uint8_t *data;
+        uint8_t type : 8;
+        uint32_t length : 24;
+
+        template <class T>
+        T get(size_t index = 0) const {
+            if (this->type != getTypeID<T>())
+                throw std::runtime_error("Invalid type");
+            if (index * sizeof(T) >= this->length)
+                throw std::out_of_range("Index out of range");
+            T result;
+            memcpy(&result, data + sizeof(T) * index, sizeof(T));
+            return result;
+        }
+
+        std::string getString() const {
+            if (this->type != getTypeID<char>())
+                throw std::runtime_error("Invalid type: should be char");
+            return std::string(this->data, this->data + this->length);
+        }
+    };
+
+    static LogEntry parse(const uint8_t *buffer, size_t length) {
+        std::map<const char *, LogElement, strcmp> parseResult{};
+        const uint8_t *data = buffer;
+        const uint8_t *end  = buffer + length;
+        while (data < end) {
+            const char *identifier = (const char *) data;
+            size_t idLen           = strlen(identifier);
+            if (idLen == 0)
+                break;
+            std::cout << data - buffer << '\t';
+            size_t headerStart = nextWord(idLen);
+            uint8_t type       = data[headerStart];
+            uint32_t length    = (data[headerStart + 1] << 0) |  //
+                              (data[headerStart + 2] << 8) |     //
+                              (data[headerStart + 2] << 16);
+            size_t dataStart        = headerStart + 4;
+            parseResult[identifier] = {data + dataStart, type, length};
+            std::cout << identifier << '\t' << +type << '\t' << length
+                      << std::endl;
+            data += dataStart + roundUpToWordSizeMultiple(length);
+        }
+        return {std::move(parseResult)};
+    }
+
+    LogElement operator[](const char *key) const { return parseResult.at(key); }
+    auto begin() { return parseResult.begin(); }
+    auto begin() const { return parseResult.begin(); }
+    auto end() { return parseResult.end(); }
+    auto end() const { return parseResult.end(); }
+
+  private:
+    struct strcmp {
+        bool operator()(const char *a, const char *b) const {
+            return std::strcmp(a, b) < 0;
+        }
+    };
+    std::map<const char *, LogElement, strcmp> parseResult{};
+
+    LogEntry(std::map<const char *, LogElement, strcmp> &&parseResult)
+        : parseResult(std::move(parseResult)) {}
 };
 
 int main() {
@@ -139,59 +264,29 @@ int main() {
         "deadbeef",
         {{0xEFBEADDE}},
     };
-    std::array<uint8_t, 200> buffer = {};
-    size_t maxSize                  = buffer.size();
 
-    maxSize -= l1.log(buffer.end() - maxSize, maxSize);
-    maxSize -= l2.log(buffer.end() - maxSize, maxSize);
-    maxSize -= l3.log(buffer.end() - maxSize, maxSize);
-    maxSize -= l4.log(buffer.end() - maxSize, maxSize);
-    maxSize -= l5.log(buffer.end() - maxSize, maxSize);
-    maxSize -= l6.log(buffer.end() - maxSize, maxSize);
-    maxSize -= l7.log(buffer.end() - maxSize, maxSize);
-    maxSize -= l8.log(buffer.end() - maxSize, maxSize);
-    maxSize -= l9.log(buffer.end() - maxSize, maxSize);
+    uint32_t carray[]                = {0x11223344, 0x55667788};
+    std::array<uint32_t, 2> stdarray = {0x11223344, 0x55667788};
 
-    for (size_t i = 0; i < buffer.size(); i += 4) {
-        // printHex(std::cout, i);
-        std::cout << i << '\t';
-        printHex(std::cout, buffer[i + 0]);
-        printHex(std::cout, buffer[i + 1]);
-        printHex(std::cout, buffer[i + 2]);
-        printHex(std::cout, buffer[i + 3]);
-        std::cout << ' '
-                  << (isprint(buffer[i + 0]) ? (char) buffer[i + 0] : '.')
-                  << ' ';
-        std::cout << (isprint(buffer[i + 1]) ? (char) buffer[i + 1] : '.')
-                  << ' ';
-        std::cout << (isprint(buffer[i + 2]) ? (char) buffer[i + 2] : '.')
-                  << ' ';
-        std::cout << (isprint(buffer[i + 3]) ? (char) buffer[i + 3] : '.')
-                  << ' ';
-        std::cout << std::endl;
+    Logger logger;
+    if (!ILoggable::logAll(logger))
+        std::cout << "Warning: buffer full. Not all Loggables have been logged"
+                  << std::endl;
+    logger.log("string", "test-string");
+    logger.log("c-array", carray);
+    logger.log("std::array", stdarray);
+
+    auto buffer = logger.getBuffer();
+
+    printBuffer(buffer.data(), buffer.size());
+
+    const LogEntry logEntry = LogEntry::parse(buffer.data(), buffer.size());
+
+    std::cout << logEntry["doubles"].get<double>(1) << std::endl;
+    std::cout << logEntry["string"].getString() << std::endl;
+    std::cout << logEntry["std::array"].get<uint32_t>(0) << std::endl;
+
+    for (auto &el : logEntry) {
+        std::cout << el.first << std::endl;
     }
-
-    auto cmp = [](const char *a, const char *b) {
-        return std::strcmp(a, b) < 0;
-    };
-    std::map<const char *, LogEntry, decltype(cmp)> parseResult{cmp};
-    const uint8_t *data = buffer.data();
-    while (data < buffer.end()) {
-        std::cout << data - buffer.begin() << std::endl;
-        const char *identifier = (const char *) data;
-        size_t idLen           = strlen(identifier);
-        if (idLen == 0) {
-            break;
-        }
-        size_t headerStart = nextWord(idLen);
-        uint8_t type       = data[headerStart];
-        uint32_t length    = (data[headerStart + 1] << 0) |  //
-                          (data[headerStart + 2] << 8) |     //
-                          (data[headerStart + 2] << 16);
-        size_t dataStart        = headerStart + 4;
-        parseResult[identifier] = {data + dataStart, type, length};
-        std::cout << identifier << " " << +type << " " << length << std::endl;
-        data += dataStart + roundUpToWordSizeMultiple(length);
-    }
-    std::cout << parseResult["doubles"].get<double>(1) << std::endl;
 }
